@@ -1,0 +1,14 @@
+# البيئة الافتراضية
+venv/
+.env
+
+# قواعد البيانات والمجلدات المولدة
+vector_db/
+faiss_db/
+data/
+__pycache__/
+*.pyc
+
+# ملفات النظام
+.DS_Store
+Thumbs.db
