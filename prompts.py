@@ -1,7 +1,7 @@
 # ==========================================
-# 1. قالب التوليد الحر (بدون مصادر - من معرفة النموذج فقط)
+# 1. Free Generation Prompt (No sources - model knowledge only)
 # ==========================================
-# هذا القالب يجعل النموذج يجيب من معرفته الداخلية بدون أي سياق خارجي
+# This prompt makes the model answer from its internal knowledge without any external context
 FREE_GENERATION_PROMPT = """You are an expert Medical AI Assistant specializing in diabetes and metabolic diseases.
 Answer the following medical question using your medical knowledge.
 
@@ -18,7 +18,7 @@ Question:
 Detailed Medical Answer:"""
 
 # ==========================================
-# 2. قالب التوليد المدعم بالمصادر (RAG Prompt) - يُستخدم كمرجع فقط
+# 2. RAG Prompt (Source-augmented generation) - used as reference only
 # ==========================================
 RAG_SYSTEM_PROMPT = """You are an expert Medical AI Assistant. 
 Use the following pieces of retrieved medical context to answer the user's question.
@@ -38,9 +38,9 @@ Question:
 Answer:"""
 
 # ==========================================
-# 2. قالب تفكيك الجمل (Claim Decomposition)
+# 3. Claim Decomposition Prompt
 # ==========================================
-# يُستخدم لتحويل الإجابة الطويلة إلى نقاط صغيرة (Claims) ليسهل فحصها في الصندوق الوردي.
+# Used to break down a long answer into small individual claims for verification
 DECOMPOSITION_PROMPT = """Break down the following medical statement into a list of individual factual claims. 
 Each claim must be a single, independent sentence.
 
@@ -50,6 +50,6 @@ Statement:
 Factual Claims:"""
 
 # ==========================================
-# 3. قالب محاكاة الهلوسة (للأغراض التعليمية/الاختبار)
+# 4. Hallucination Simulation Prompt (for testing/educational purposes)
 # ==========================================
 HALLUCINATION_TEST_PROMPT = "Generate a plausible-sounding but medically incorrect fact about insulin."

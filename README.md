@@ -1,235 +1,220 @@
 # BioRAG Medical Assistant 🏥
 
-نظام الكشف الآلي عن الهلوسة والتحقق من الحقائق في أنظمة الأسئلة والأجوبة الطبية باستخدام تقنية التوليد المسترجع المعزز (RAG)
+Automated Hallucination Detection and Fact-Checking System for Medical Question-Answering using a Generate-then-Verify Architecture.
 
-## 📋 نظرة عامة
+## 📋 Overview
 
-BioRAG هو نظام ذكاء اصطناعي متقدم للرعاية الصحية يعتمد على تقنية RAG (Retrieval-Augmented Generation) لضمان الدقة العلمية المطلقة. يقوم النظام بربط قدرات النماذج اللغوية الكبيرة بأحدث الأدبيات الطبية الموثقة من PubMed، مما يمنع تقديم معلومات خاطئة أو "مهلوسة" للمستخدمين.
+BioRAG is an advanced healthcare AI system that uses a **Generate-then-Verify** architecture to ensure scientific accuracy. The system first generates answers freely using a language model, then retrieves relevant medical literature from PubMed and verifies the generated answer against the sources using Natural Language Inference (NLI). This approach detects and flags hallucinated or unsupported medical information.
 
-## ✨ المميزات الرئيسية
+All models run **fully locally** — no API keys required.
 
-- 🔍 **استرجاع ذكي**: البحث في قاعدة بيانات ضخمة من أبحاث PubMed
-- 🤖 **توليد مدعوم بالأدلة**: إجابات مبنية على مصادر علمية موثقة
-- ✅ **التحقق الآلي**: وحدة تحقق مبتكرة (Verification Module) تفحص كل جملة
-- 📊 **درجة الموثوقية**: حساب Faithfulness Score لكل إجابة
-- ⚠️ **تحذيرات الهلوسة**: تنبيه المستخدم عند اكتشاف معلومات غير مدعومة
-- 📚 **مراجع علمية**: روابط مباشرة للأبحاث الأصلية
+## ✨ Key Features
 
-## 🏗️ البنية المعمارية
+- 🤖 **Free Generation**: AI generates detailed medical answers from its own knowledge
+- 🔍 **Smart Retrieval**: Semantic search across a large PubMed diabetes research database
+- ✅ **Automated Verification**: NLI-based verification module checks every sentence against sources
+- 📊 **Faithfulness Score**: Computes a hybrid faithfulness score for each answer
+- ⚠️ **Hallucination Warnings**: Alerts users when information is unsupported by medical literature
+- 📚 **Source References**: Direct links to original PubMed research papers
+
+## 🏗️ Architecture
+
+The system follows a **Generate-then-Verify** pipeline:
 
 ```
-┌─────────────┐
-│   السؤال    │
-└──────┬──────┘
-       │
-       ▼
-┌─────────────────────┐
-│  Embedding Model    │
-│  (BGE-small)        │
-└──────┬──────────────┘
-       │
-       ▼
-┌─────────────────────┐
-│  Vector Database    │
-│  (ChromaDB)         │
-│  PubMed Data        │
-└──────┬──────────────┘
-       │
-       ▼
-┌─────────────────────┐
-│  LLM Generator      │
-│  (BioMistral-7B)    │
-└──────┬──────────────┘
-       │
-       ▼
-┌─────────────────────┐
-│ Verification Module │ ← الابتكار الأساسي
-│  (NLI DeBERTa)      │
-└──────┬──────────────┘
-       │
-       ▼
-┌─────────────────────┐
-│  Faithfulness Score │
-└──────┬──────────────┘
-       │
-       ▼
-┌─────────────────────┐
-│  الإجابة النهائية  │
-│  + المصادر          │
-└─────────────────────┘
+┌──────────────────┐
+│   User Question  │
+└────────┬─────────┘
+         │
+         ▼
+┌──────────────────────┐
+│  LLM Free Generation │  ← Step 1: Generate answer without context
+│  (FLAN-T5-base)      │
+└────────┬─────────────┘
+         │
+         ▼
+┌──────────────────────┐
+│  Vector Database     │  ← Step 2: Retrieve relevant sources
+│  (ChromaDB + BGE)    │
+│  PubMedQA Data       │
+└────────┬─────────────┘
+         │
+         ▼
+┌──────────────────────┐
+│  Verification Module │  ← Step 3: Compare answer vs sources
+│  NLI (DeBERTa-v3)    │
+│  + Semantic Similarity│
+│  + Entity Guards     │
+└────────┬─────────────┘
+         │
+         ▼
+┌──────────────────────┐
+│  Faithfulness Score  │
+│  + Verified Answer   │
+│  + Source Documents  │
+└──────────────────────┘
 ```
 
-## 🚀 التثبيت والإعداد
+## 🚀 Installation & Setup
 
-### المتطلبات الأساسية
+### Prerequisites
 
 - Python 3.10+
 - pip
-- حساب Hugging Face (للحصول على API Token)
 
-### خطوات التثبيت
+### Installation Steps
 
-1. **استنساخ المشروع**
+1. **Clone the repository**
 ```bash
-git clone <repository-url>
+git clone https://github.com/org-orang-ganteng/Chatbot-Diabets.git
 cd BioRAG_Project
 ```
 
-2. **إنشاء بيئة افتراضية**
+2. **Create a virtual environment**
 ```bash
 python -m venv venv
 venv\Scripts\activate  # Windows
 # source venv/bin/activate  # Linux/Mac
 ```
 
-3. **تثبيت المكتبات**
+3. **Install dependencies**
 ```bash
 pip install -r requirements.txt
 ```
 
-4. **إعداد ملف البيئة**
-```bash
-# إنشاء ملف .env
-echo HF_TOKEN=your_huggingface_token_here > .env
-```
-
-احصل على Token من: https://huggingface.co/settings/tokens
-
-5. **تحميل بيانات PubMed**
+4. **Download PubMed data**
 ```bash
 python download_data.py
 ```
 
-6. **بناء قاعدة البيانات المتجهة**
+5. **Build the vector database**
 ```bash
 python fix_database.py
 ```
 
-## 🎯 تشغيل التطبيق
+## 🎯 Running the Application
 
 ```bash
 python -m streamlit run app.py
 ```
 
-سيفتح التطبيق تلقائياً في المتصفح على:
+The application will open automatically in your browser at:
 - Local URL: http://localhost:8501
-- Network URL: http://192.168.100.115:8501
 
-## 📁 هيكل المشروع
+## 📁 Project Structure
 
 ```
 BioRAG_Project/
-├── app.py                      # تطبيق Streamlit الرئيسي
-├── config.py                   # إعدادات النظام
-├── prompts.py                  # قوالب النصوص
-├── requirements.txt            # المكتبات المطلوبة
-├── download_data.py            # تحميل بيانات PubMed
-├── setup_data.py               # بناء قاعدة البيانات
-├── fix_database.py             # إصلاح قاعدة البيانات
+├── app.py                      # Main Streamlit chatbot application
+├── config.py                   # System configuration & constants
+├── prompts.py                  # Prompt templates
+├── requirements.txt            # Python dependencies
+├── download_data.py            # PubMed data downloader
+├── setup_data.py               # Database builder
+├── fix_database.py             # Database repair utility
 │
-├── services/                   # الخدمات الأساسية
-│   ├── data_loader.py         # تحميل البيانات
-│   ├── retriever.py           # البحث في قاعدة البيانات
-│   ├── generator.py           # توليد الإجابات
-│   ├── verifier.py            # التحقق من الإجابات
-│   └── scorer.py              # حساب درجة الموثوقية
+├── services/                   # Core services
+│   ├── data_loader.py         # Data loading utilities
+│   ├── retriever.py           # Vector database search
+│   ├── generator.py           # Answer generation
+│   ├── verifier.py            # Answer verification
+│   └── scorer.py              # Faithfulness scoring
 │
-├── utils/                      # أدوات مساعدة
+├── utils/                      # Helper utilities
 │   └── helpers.py
 │
-├── data/                       # البيانات
-│   ├── local_diabetes_dataset/ # بيانات PubMed المحلية
-│   └── raw_pdfs/              # ملفات PDF إضافية
+├── assets/                     # Frontend assets
+│   └── style.css              # Custom UI theme
 │
-└── vector_db/                  # قاعدة البيانات المتجهة
-    └── chroma_store/
+├── data/                       # Data directory
+│   ├── local_diabetes_dataset/ # Local PubMed diabetes data
+│   └── raw_pdfs/              # Additional PDF files
+│
+└── vector_db/                  # Vector database
+    └── chroma_store/          # ChromaDB persistent storage
 ```
 
-## 🔧 استكشاف الأخطاء
+## 🔧 Troubleshooting
 
-### مشكلة: ChromaDB Error - HNSW Index
+### ChromaDB Error - HNSW Index
 
-**الأعراض:**
+**Symptoms:**
 ```
 InternalError: Error loading hnsw index
 ```
 
-**الحل:**
+**Solution:**
 ```bash
 python fix_database.py
 ```
 
-### مشكلة: HuggingFace API Error
+### Out of Memory
 
-**الأعراض:**
-```
-401 Unauthorized
-```
+**Solution:**
+- Reduce `TOP_K_CANDIDATES` in `config.py`
+- Use a smaller embedding model
 
-**الحل:**
-- تأكد من صحة HF_TOKEN في ملف .env
-- تحقق من صلاحيات Token
+## 🔬 Models Used
 
-### مشكلة: Out of Memory
+| Component | Model | Purpose |
+|-----------|-------|---------|
+| Generator | google/flan-t5-base | Free medical answer generation |
+| Embedding | BAAI/bge-small-en-v1.5 | Text-to-vector conversion for semantic search |
+| NLI Verifier | cross-encoder/nli-deberta-v3-base | Sentence-level faithfulness verification |
 
-**الحل:**
-- قلل قيمة SAMPLE_SIZE في config.py
-- استخدم نموذج embedding أصغر
+## 📊 Verification Pipeline
 
-## 📊 تقييم الأداء
+The faithfulness scoring uses a **hybrid approach**:
 
-النظام يستخدم إطار عمل RAGAS لتقييم:
+1. **NLI Entailment (55%)**: Checks if source context entails each generated sentence
+2. **Semantic Similarity (45%)**: Measures embedding similarity between claims and sources
+3. **Entity Guard**: Penalizes scores when retrieved context doesn't cover question entities
+4. **Coherence Check**: Ensures the answer is topically relevant to the question
 
-- **Context Relevance**: مدى صلة المستندات المسترجعة
-- **Answer Faithfulness**: مدى التزام الإجابة بالمصادر
-- **Answer Relevance**: مدى صلة الإجابة بالسؤال
+Score thresholds:
+- **≥ 70%**: ✅ Verified — Answer is supported by medical literature
+- **40–69%**: ℹ️ Partial Match — Answer is partially supported
+- **< 40%**: ⚠️ Low Match — Answer has low match with sources
 
-## 🔬 النماذج المستخدمة
+## 🎓 Academic Use
 
-| المكون | النموذج | الوظيفة |
-|--------|---------|---------|
-| Embedding | BAAI/bge-small-en-v1.5 | تحويل النصوص لمتجهات |
-| LLM | BioMistral/BioMistral-7B | توليد الإجابات الطبية |
-| NLI | cross-encoder/nli-deberta-v3-base | التحقق من الجمل |
-
-## 🎓 الاستخدام الأكاديمي
-
-إذا استخدمت هذا المشروع في بحثك، يرجى الإشارة إلى:
+If you use this project in your research, please cite:
 
 ```bibtex
-@software{biorag2024,
-  title={BioRAG: Automated Hallucination Detection in Medical QA Systems},
-  author={Your Name},
-  year={2024},
-  url={https://github.com/your-repo}
+@software{biorag2026,
+  title={BioRAG: Automated Hallucination Detection in Medical QA using Generate-then-Verify},
+  author={Aseel Flihan},
+  year={2026},
+  url={https://github.com/org-orang-ganteng/Chatbot-Diabets}
 }
 ```
 
-## 📝 الترخيص
+## 📝 License
 
-هذا المشروع مفتوح المصدر ومتاح للاستخدام الأكاديمي والبحثي.
+This project is open-source and available for academic and research use.
 
-## 🤝 المساهمة
+## 🤝 Contributing
 
-نرحب بالمساهمات! يرجى:
-1. Fork المشروع
-2. إنشاء branch جديد
-3. Commit التغييرات
-4. Push إلى Branch
-5. فتح Pull Request
+Contributions are welcome! Please:
+1. Fork the repository
+2. Create a new branch
+3. Commit your changes
+4. Push to the branch
+5. Open a Pull Request
 
-## 📧 التواصل
+## 📧 Contact
 
-للأسئلة والاستفسارات، يرجى فتح Issue في المستودع.
+For questions and inquiries, please open an Issue in the repository.
 
-## 🙏 شكر وتقدير
+## 🙏 Acknowledgments
 
 - **PubMedQA Dataset**: qiaojin/PubMedQA
-- **BioMistral**: نموذج LLM متخصص في الطب
-- **LangChain**: إطار عمل RAG
-- **ChromaDB**: قاعدة البيانات المتجهة
+- **FLAN-T5**: Google's instruction-tuned text-to-text model
+- **DeBERTa-v3**: Microsoft's NLI model for verification
+- **LangChain**: RAG framework
+- **ChromaDB**: Vector database
 
 ---
 
-**⚠️ تنويه طبي مهم:**
-هذا النظام أداة مساعدة للبحث والتعليم فقط. لا يجب استخدامه كبديل للاستشارة الطبية المهنية. استشر دائماً طبيباً مؤهلاً للحصول على المشورة الطبية.
+**⚠️ Medical Disclaimer:**
+This system is a research and educational tool only. It should not be used as a substitute for professional medical advice. Always consult a qualified healthcare professional for medical guidance.
