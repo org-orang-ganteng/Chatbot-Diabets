@@ -71,39 +71,49 @@ def load_diabetes_pubmedqa(
     max_samples: int = 2000,
     keywords: Iterable[str] = DIABETES_KEYWORDS,
 ) -> list[PubMedQASample]:
-    # PubMedQA requires a config name; try labeled first, then artificial.
-    for config_name in ("pqa_labeled", "pqa_artificial", "pqa_unlabeled"):
+    # Load from multiple PubMedQA configs to maximize diabetes coverage.
+    # pqa_labeled has expert answers; pqa_artificial has auto-generated ones.
+    seen_qids: set[str] = set()
+    filtered: list[PubMedQASample] = []
+
+    for config_name in ("pqa_labeled", "pqa_artificial"):
         try:
             raw = load_dataset(dataset_name, config_name, trust_remote_code=True)
-            break
         except Exception:
             continue
-    else:
-        raw = load_dataset(dataset_name, trust_remote_code=True)
-    split = _pick_split(raw)
+        split = _pick_split(raw)
 
-    filtered: list[PubMedQASample] = []
-    for idx, record in enumerate(split):
-        question = _normalize_text(str(record.get("question", "")))
-        context = _extract_context_text(record)
+        for idx, record in enumerate(split):
+            question = _normalize_text(str(record.get("question", "")))
+            context = _extract_context_text(record)
 
-        if not question or not context:
-            continue
+            if not question or not context:
+                continue
 
-        if not _is_diabetes_related(question, context, keywords):
-            continue
+            if not _is_diabetes_related(question, context, keywords):
+                continue
 
-        filtered.append(
-            PubMedQASample(
-                qid=str(record.get("pubid", idx)),
-                question=question,
-                context=context,
-                answer=_extract_answer_text(record),
+            qid = str(record.get("pubid", f"{config_name}_{idx}"))
+            if qid in seen_qids:
+                continue
+            seen_qids.add(qid)
+
+            filtered.append(
+                PubMedQASample(
+                    qid=qid,
+                    question=question,
+                    context=context,
+                    answer=_extract_answer_text(record),
+                )
             )
-        )
+
+            if len(filtered) >= max_samples:
+                break
 
         if len(filtered) >= max_samples:
             break
+
+    logger.info("Loaded %d diabetes-related samples from PubMedQA", len(filtered))
 
     # Fetch PubMed metadata (authors, year, journal) in batch
     _enrich_with_pubmed_metadata(filtered)

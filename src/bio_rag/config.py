@@ -7,11 +7,23 @@ from pathlib import Path
 
 DIABETES_KEYWORDS = [
     "diabetes",
+    "diabetic",
     "blood glucose",
     "insulin",
     "type 1 diabetes",
     "type 2 diabetes",
     "diabetic complications",
+    "glycemic",
+    "glycaemic",
+    "hyperglycemia",
+    "hypoglycemia",
+    "hypoglycaemia",
+    "metformin",
+    "HbA1c",
+    "gestational diabetes",
+    "glucose tolerance",
+    "pancreatic beta",
+    "islet",
 ]
 
 
@@ -22,7 +34,7 @@ class BioRAGConfig:
     )
     generator_model: str = os.getenv("BIO_RAG_GENERATOR_MODEL", "BioMistral/BioMistral-7B")
     index_path: Path = Path(os.getenv("BIO_RAG_INDEX_PATH", ".cache/bio_rag_faiss"))
-    max_samples: int = int(os.getenv("BIO_RAG_MAX_SAMPLES", "2000"))
+    max_samples: int = int(os.getenv("BIO_RAG_MAX_SAMPLES", "500"))
     top_k: int = int(os.getenv("BIO_RAG_TOP_K", "5"))
     claim_similarity_threshold: float = float(
         os.getenv("BIO_RAG_CLAIM_SIM_THRESHOLD", "0.62")

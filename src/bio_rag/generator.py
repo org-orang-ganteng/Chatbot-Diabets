@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from typing import Iterable
 
 import torch
@@ -10,7 +11,7 @@ from .retriever import RetrievedPassage
 
 logger = logging.getLogger(__name__)
 
-GENERATOR_FALLBACK = "google/flan-t5-small"
+GENERATOR_FALLBACK = "google/flan-t5-base"
 
 
 class BiomedicalAnswerGenerator:
@@ -84,9 +85,31 @@ class BiomedicalAnswerGenerator:
 
     def generate(self, question: str, passages: Iterable[RetrievedPassage]) -> str:
         passage_list = list(passages)
-        prompt = _format_prompt(question, passage_list, seq2seq=self._is_seq2seq)
 
-        # Truncate prompt to model's max length
+        # Strategy 1: Try model generation
+        model_answer = self._try_model_generation(question, passage_list)
+
+        # Strategy 2: Build answer from source Q&A pairs in evidence
+        source_answer = _build_answer_from_sources(question, passage_list)
+
+        # Combine: if model answer is good, use it as lead + enrich with sources
+        if _is_good_answer(model_answer, question):
+            if source_answer and len(source_answer) > len(model_answer):
+                return f"{model_answer}\n\n{source_answer}"
+            return model_answer
+
+        # Model answer was weak, use source-based answer
+        if source_answer:
+            logger.info("Model answer too weak, using source-QA strategy")
+            return source_answer
+
+        # Last resort
+        return model_answer if model_answer else "No relevant evidence found for this question."
+
+    def _try_model_generation(self, question: str, passages: list[RetrievedPassage]) -> str:
+        """Try generating with the LLM using an optimized prompt."""
+        prompt = _format_prompt(question, passages, seq2seq=self._is_seq2seq)
+
         max_input = getattr(self.tokenizer, "model_max_length", 512)
         if max_input > 100_000:
             max_input = 512
@@ -104,32 +127,56 @@ class BiomedicalAnswerGenerator:
         with torch.no_grad():
             output_ids = self.model.generate(
                 **inputs,
-                max_new_tokens=256,
+                max_new_tokens=300,
                 do_sample=False,
+                num_beams=4,
+                early_stopping=True,
+                no_repeat_ngram_size=3,
             )
 
         if self._is_seq2seq:
             decoded = self.tokenizer.decode(output_ids[0], skip_special_tokens=True)
         else:
-            # For causal LM, strip the input prompt from the output
             new_tokens = output_ids[0][inputs["input_ids"].shape[1]:]
             decoded = self.tokenizer.decode(new_tokens, skip_special_tokens=True)
 
-        return decoded.strip() if decoded.strip() else "No answer generated."
+        return decoded.strip()
+
+
+def _is_good_answer(answer: str, question: str) -> bool:
+    """Check if an answer is meaningful and relevant to the question."""
+    if not answer or len(answer) < 30:
+        return False
+    # Extract key nouns from question
+    q_words = set(re.findall(r'\b[a-zA-Z]{4,}\b', question.lower()))
+    a_words = set(re.findall(r'\b[a-zA-Z]{4,}\b', answer.lower()))
+    # At least some question keywords should appear in the answer
+    overlap = q_words & a_words
+    if len(overlap) < 1:
+        return False
+    return True
 
 
 def _format_prompt(question: str, passages: list[RetrievedPassage], *, seq2seq: bool = False) -> str:
+    if seq2seq:
+        # For seq2seq: include source Q&A pairs as examples + context
+        qa_context_parts = []
+        for p in passages[:3]:
+            part = p.text[:350]
+            if p.source_answer:
+                part = f"Q: {p.source_question}\nA: {p.source_answer}\nContext: {p.text[:200]}"
+            qa_context_parts.append(part)
+        context = "\n\n".join(qa_context_parts)
+        return (
+            f"Based on the following medical research, answer the question in detail.\n\n"
+            f"{context[:2000]}\n\n"
+            f"Question: {question}\n"
+            f"Detailed answer:"
+        )
+
     evidence_block = "\n\n".join(
         [f"[E{p.rank}] {p.text[:500]}" for p in passages]
     )
-    if seq2seq:
-        # Simpler prompt for small seq2seq models like flan-t5-small
-        return (
-            f"Answer the following medical question based on the context.\n\n"
-            f"Context: {evidence_block[:1500]}\n\n"
-            f"Question: {question}\n\n"
-            f"Answer:"
-        )
     return (
         "You are a biomedical QA assistant. Use only the evidence passages below "
         "to answer the question. If evidence is insufficient, explicitly say so. "
@@ -138,3 +185,70 @@ def _format_prompt(question: str, passages: list[RetrievedPassage], *, seq2seq: 
         f"Evidence:\n{evidence_block}\n\n"
         "Answer:"
     )
+
+
+def _build_answer_from_sources(question: str, passages: list[RetrievedPassage]) -> str:
+    """Build a structured answer from evidence passages and their source Q&A metadata."""
+    if not passages:
+        return "No relevant evidence found for this question."
+
+    q_lower = question.lower()
+
+    # Collect relevant findings from source answers and context
+    findings = []
+    for p in passages[:5]:
+        # Use the source answer (PubMedQA long_answer) if available and relevant
+        if p.source_answer and len(p.source_answer) > 20:
+            findings.append({
+                "text": p.source_answer,
+                "title": p.title,
+                "year": p.year,
+                "type": "answer",
+            })
+        else:
+            # Extract the most relevant sentences from the evidence text
+            sentences = re.split(r'(?<=[.!?])\s+', p.text)
+            relevant = []
+            for s in sentences:
+                s = s.strip()
+                if len(s) < 30:
+                    continue
+                # Prefer sentences with question keywords
+                q_words = set(re.findall(r'\b[a-zA-Z]{4,}\b', q_lower))
+                s_words = set(re.findall(r'\b[a-zA-Z]{4,}\b', s.lower()))
+                if q_words & s_words:
+                    relevant.append(s)
+            if relevant:
+                findings.append({
+                    "text": " ".join(relevant[:2]),
+                    "title": p.title,
+                    "year": p.year,
+                    "type": "context",
+                })
+
+    if not findings:
+        # Final fallback: just use evidence text directly
+        parts = []
+        for p in passages[:3]:
+            text = p.text[:300].strip()
+            if len(text) > 300:
+                text = text.rsplit(" ", 1)[0] + "…"
+            parts.append(f"• {text}")
+        return "Based on the available evidence:\n\n" + "\n\n".join(parts)
+
+    # Build structured answer
+    parts = []
+    for f in findings[:3]:
+        text = f["text"].strip()
+        if len(text) > 500:
+            text = text[:500].rsplit(" ", 1)[0] + "…"
+        source_info = ""
+        if f["title"]:
+            source_info = f" (Source: {f['title']}"
+            if f["year"]:
+                source_info += f", {f['year']}"
+            source_info += ")"
+        parts.append(f"• {text}{source_info}")
+
+    header = f"Based on the available research on \"{question}\":"
+    return header + "\n\n" + "\n\n".join(parts)

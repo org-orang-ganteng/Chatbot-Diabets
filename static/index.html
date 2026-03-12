@@ -70,6 +70,13 @@ html,body{height:100%;font-family:'Segoe UI',system-ui,-apple-system,sans-serif;
 .metric-badge .val{color:#38bdf8;font-weight:600}
 .metric-badge .label{color:#64748b}
 
+/* ── Answer Section ────────────────────────────────────────── */
+.answer-label{font-size:.75rem;font-weight:700;color:#38bdf8;text-transform:uppercase;letter-spacing:.05em;margin-bottom:4px}
+.answer-text{font-size:.95rem;line-height:1.7;color:#e2e8f0;white-space:pre-wrap}
+.question-echo{font-size:.82rem;color:#94a3b8;margin-bottom:10px;padding-bottom:8px;border-bottom:1px solid #334155}
+.question-echo strong{color:#38bdf8}
+.ev-label{font-size:.75rem;font-weight:700;color:#38bdf8;text-transform:uppercase;letter-spacing:.05em;margin-top:12px;margin-bottom:4px}
+
 /* ── Evidence Section ─────────────────────────────────────────── */
 .evidence-section{margin-top:12px}
 .ev-toggle{background:none;border:1px solid #334155;color:#94a3b8;padding:6px 14px;border-radius:8px;cursor:pointer;font-size:.78rem;transition:all .15s;display:flex;align-items:center;gap:6px}
@@ -155,10 +162,10 @@ html,body{height:100%;font-family:'Segoe UI',system-ui,-apple-system,sans-serif;
       <h3>Ask anything about diabetes</h3>
       <p>Evidence-based answers from PubMed literature with author attribution, hallucination scoring, and claim verification.</p>
       <div class="chips">
-        <div class="chip" onclick="useChip(this)">Does metformin reduce cardiovascular risk in type 2 diabetes?</div>
-        <div class="chip" onclick="useChip(this)">What is the relationship between obesity and insulin resistance?</div>
-        <div class="chip" onclick="useChip(this)">Apakah insulin mempengaruhi kadar gula darah?</div>
-        <div class="chip" onclick="useChip(this)">Bagaimana diabetes tipe 2 didiagnosis?</div>
+        <div class="chip" onclick="useChip(this)">Does hypoglycaemia increase the risk of cardiovascular events?</div>
+        <div class="chip" onclick="useChip(this)">Does insulin resistance drive the association between hyperglycemia and cardiovascular risk?</div>
+        <div class="chip" onclick="useChip(this)">Is high cumulative insulin exposure a risk factor of atherosclerosis in type 1 diabetes?</div>
+        <div class="chip" onclick="useChip(this)">Apakah hipoglikemia meningkatkan risiko penyakit kardiovaskular?</div>
       </div>
     </div>
   </div>
@@ -255,14 +262,24 @@ function buildBotBubble(d){
   const wrapper=document.createElement('div');
   wrapper.className='msg bot';
 
+  const isID = d.language === 'id';
+  const lblQuestion = isID ? 'Pertanyaan' : 'Question';
+  const lblAnswer = isID ? 'Jawaban' : 'Answer';
+  const lblEvidence = isID ? 'Bukti' : 'Evidence';
+  const lblSources = isID ? 'sumber' : 'sources';
+
   let html='<div class="avatar">🧬</div><div class="msg-bubble">';
 
   // Translation notice
-  if(d.language==='id' && d.question_en){
+  if(isID && d.question_en){
     html+=`<div class="translation-notice"><span class="flag">🇮🇩</span> Diterjemahkan: <em>${escHtml(d.question_en)}</em></div>`;
   }
 
-  // Answer with streaming effect class
+  // Question echo
+  html+=`<div class="question-echo"><strong>${lblQuestion}:</strong> ${escHtml(d.question)}</div>`;
+
+  // Answer section
+  html+=`<div class="answer-label">${lblAnswer}</div>`;
   html+=`<div class="answer-text">${escHtml(d.answer)}</div>`;
 
   // Metrics
@@ -292,7 +309,8 @@ function buildBotBubble(d){
   if(d.evidence && d.evidence.length){
     const eid='ev_'+Date.now();
     html+=`<div class="evidence-section">
-      <button class="ev-toggle" onclick="document.getElementById('${eid}').classList.toggle('open')">📚 Evidence (${d.evidence.length} sources) ▾</button>
+      <div class="ev-label">${lblEvidence}</div>
+      <button class="ev-toggle" onclick="document.getElementById('${eid}').classList.toggle('open')">📚 ${lblEvidence} (${d.evidence.length} ${lblSources}) ▾</button>
       <div class="ev-list" id="${eid}">`;
     d.evidence.forEach(ev=>{
       html+=`<div class="ev-item">

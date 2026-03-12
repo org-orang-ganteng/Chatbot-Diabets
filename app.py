@@ -1,422 +1,248 @@
 """
-BioRAG Medical Assistant - Fully Local (No API Key Required)
-All models run on your machine.
+Bio-RAG Web Server
+==================
+Flask backend serving the landing page and chat API.
+Supports Indonesian and English questions.
 """
+
+from __future__ import annotations
+
+import json
+import logging
 import re
-import numpy as np
-import streamlit as st
-import torch
-from config import *
-from langchain_huggingface import HuggingFaceEmbeddings
-from langchain_chroma import Chroma
-from transformers import AutoTokenizer, AutoModelForSequenceClassification, AutoModelForSeq2SeqLM
-from prompts import RAG_SYSTEM_PROMPT, FREE_GENERATION_PROMPT
+import time
+import threading
+
+from flask import Flask, jsonify, request, send_from_directory
+from transformers import MarianMTModel, MarianTokenizer
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# ── Indonesian → English translation map for medical terms ──────────────────
+_ID_EN_MAP = {
+    "apakah": "does", "apa": "what", "bagaimana": "how", "mengapa": "why",
+    "bisakah": "can", "dapatkah": "can", "adakah": "is there",
+    "diabetes": "diabetes", "diabetik": "diabetic", "gula darah": "blood glucose",
+    "kadar gula": "blood sugar", "glukosa": "glucose", "insulin": "insulin",
+    "resistensi insulin": "insulin resistance", "metformin": "metformin",
+    "tekanan darah": "blood pressure", "kolesterol": "cholesterol",
+    "obesitas": "obesity", "kegemukan": "obesity", "komplikasi": "complications",
+    "pengobatan": "treatment", "terapi": "therapy", "obat": "medication",
+    "penyakit jantung": "heart disease", "kardiovaskular": "cardiovascular",
+    "pembuluh darah": "blood vessel", "ginjal": "kidney", "retinopati": "retinopathy",
+    "neuropati": "neuropathy", "olahraga": "exercise", "latihan": "exercise",
+    "pola makan": "diet", "makanan": "food", "nutrisi": "nutrition",
+    "vitamin": "vitamin", "suplemen": "supplement",
+    "pankreas": "pancreas", "transplantasi": "transplantation",
+    "diagnosis": "diagnosis", "mendiagnosis": "diagnose",
+    "gejala": "symptoms", "tanda": "signs",
+    "pencegahan": "prevention", "mencegah": "prevent",
+    "meningkatkan": "increase", "menurunkan": "reduce", "mempengaruhi": "affect",
+    "risiko": "risk", "faktor risiko": "risk factor",
+    "tipe 1": "type 1", "tipe 2": "type 2",
+    "pasien": "patients", "penderita": "patients",
+    "hubungan": "relationship", "pengaruh": "effect",
+    "kontrol glikemik": "glycemic control", "HbA1c": "HbA1c",
+    "menyebabkan": "cause", "mengakibatkan": "cause",
+    "pada": "in", "dengan": "with", "untuk": "for",
+    "dan": "and", "atau": "or", "dari": "from",
+    "yang": "that", "ini": "this", "itu": "that",
+    "dapat": "can", "bisa": "can", "mampu": "able to",
+    "membantu": "help", "berpengaruh": "influential",
+}
+
+# ── Translation Model (EN → ID) ────────────────────────────────────────────
+_translator_model = None
+_translator_tokenizer = None
+_translator_lock = threading.Lock()
 
 
-def split_sentences(text):
-    """Split text into sentences using regex (no nltk dependency)"""
+def _load_translator():
+    global _translator_model, _translator_tokenizer
+    if _translator_model is not None:
+        return
+    with _translator_lock:
+        if _translator_model is not None:
+            return
+        model_name = "Helsinki-NLP/opus-mt-en-id"
+        logger.info("Loading translation model %s …", model_name)
+        _translator_tokenizer = MarianTokenizer.from_pretrained(model_name)
+        _translator_model = MarianMTModel.from_pretrained(model_name)
+        logger.info("Translation model ready.")
+
+
+def _translate_en_to_id(text: str) -> str:
+    """Translate English text to Indonesian using MarianMT model."""
+    _load_translator()
+
+    # Split into sentences to translate individually for better quality
     sentences = re.split(r'(?<=[.!?])\s+', text.strip())
-    return [s.strip() for s in sentences if s.strip()]
-
-
-# --- Page Configuration ---
-st.set_page_config(page_title="BioRAG Medical Assistant", page_icon="🏥", layout="wide")
-
-# --- Load Custom CSS ---
-import os
-css_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "style.css")
-if os.path.exists(css_path):
-    with open(css_path) as f:
-        st.markdown(f"<style>{f.read()}</style>", unsafe_allow_html=True)
-
-# --- Cached loaders ---
-@st.cache_resource(show_spinner=False)
-def load_embeddings():
-    return HuggingFaceEmbeddings(model_name=EMBEDDING_MODEL_NAME)
-
-@st.cache_resource(show_spinner=False)
-def load_nli():
-    tokenizer = AutoTokenizer.from_pretrained(NLI_MODEL_NAME)
-    model = AutoModelForSequenceClassification.from_pretrained(NLI_MODEL_NAME)
-    return tokenizer, model
-
-@st.cache_resource(show_spinner=False)
-def load_generator():
-    tokenizer = AutoTokenizer.from_pretrained(GENERATOR_MODEL_NAME)
-    model = AutoModelForSeq2SeqLM.from_pretrained(GENERATOR_MODEL_NAME)
-    return tokenizer, model
-
-@st.cache_resource(show_spinner=False)
-def load_vector_db(_embeddings):
-    return Chroma(persist_directory=CHROMA_DB_DIR, embedding_function=_embeddings)
-
-
-def get_db():
-    """Lazy-load embeddings + vector DB (cached after first call)"""
-    embeddings = load_embeddings()
-    return load_vector_db(embeddings)
-
-
-# ============================================================
-#  Question-Driven Retrieval with Semantic Reranking
-# ============================================================
-def retrieve_relevant_docs(question):
-    """
-    1. Broad vector search (TOP_K_CANDIDATES)
-    2. Rerank by question-to-original-question semantic similarity
-    3. Return (top_docs, best_similarity_score)
-    """
-    db = get_db()
-    emb = load_embeddings()
-
-    candidates = db.similarity_search(question, k=TOP_K_CANDIDATES)
-    if not candidates:
-        return [], 0.0
-
-    # Collect original questions from metadata
-    orig_questions = []
-    for doc in candidates:
-        oq = (doc.metadata or {}).get("question", "")
-        orig_questions.append(oq if oq else doc.page_content[:200])
-
-    # Batch embed user question + all original questions
-    q_vec = np.array(emb.embed_query(question))
-    oq_vecs = np.array(emb.embed_documents(orig_questions))
-
-    # Cosine similarity between user question and each original question
-    q_norm = q_vec / (np.linalg.norm(q_vec) + 1e-8)
-    oq_norms = oq_vecs / (np.linalg.norm(oq_vecs, axis=1, keepdims=True) + 1e-8)
-    similarities = oq_norms @ q_norm
-
-    # Sort by question-intent similarity (descending)
-    ranked = sorted(range(len(candidates)), key=lambda i: similarities[i], reverse=True)
-    top_indices = ranked[:TOP_K_RETRIEVE]
-    best_score = float(similarities[top_indices[0]])
-    return [candidates[i] for i in top_indices], best_score
-
-
-# ============================================================
-#  Hybrid Faithfulness Scorer (NLI + Semantic + Entity Guard)
-# ============================================================
-def _extract_key_terms(text):
-    """Extract meaningful medical/scientific terms (2+ chars, lowered)"""
-    text_lower = text.lower()
-    # Remove common stop words and keep meaningful tokens
-    stop = {
-        'the','a','an','is','are','was','were','be','been','being','have','has',
-        'had','do','does','did','will','would','shall','should','may','might',
-        'can','could','of','in','to','for','with','on','at','by','from','as',
-        'into','through','during','before','after','above','below','between',
-        'out','up','down','about','this','that','these','those','it','its',
-        'and','or','but','not','no','nor','so','if','then','than','too','very',
-        'just','also','how','what','which','who','whom','why','where','when',
-        'all','each','every','both','few','more','most','other','some','such',
-        'only','own','same','than','they','their','them','there','here','use',
-        'used','using','does','improve','increase','decrease','cause','effect',
-        'help','function','level','rate','risk','associated','related','study',
-        'patient','patients','group','result','results','found','shown','based',
-        'suggest','compared','significant','however','therefore','conclusion',
-    }
-    words = re.findall(r'\b[a-z]{3,}\b', text_lower)
-    return set(w for w in words if w not in stop)
-
-
-def _question_context_relevance(question, context):
-    """
-    Check if the retrieved context actually covers the key entities
-    in the question. Returns a penalty multiplier [0.1 .. 1.0].
-    
-    Logic: extract key terms from question, check what fraction
-    appears in context. Low overlap → heavy penalty.
-    """
-    q_terms = _extract_key_terms(question)
-    if not q_terms:
-        return 1.0
-
-    ctx_lower = context.lower()
-    matched = sum(1 for t in q_terms if t in ctx_lower)
-    coverage = matched / len(q_terms)
-
-    # If less than 30% of question terms found in context → heavy penalty
-    if coverage < 0.3:
-        return 0.15
-    elif coverage < 0.5:
-        return 0.4
-    elif coverage < 0.7:
-        return 0.7
-    return 1.0
-
-
-def _answer_question_coherence(question, answer):
-    """
-    Check if the answer is actually about the same topic as the question
-    using embedding similarity. Returns a penalty multiplier [0.1 .. 1.0].
-    """
-    emb = load_embeddings()
-    q_vec = np.array(emb.embed_query(question))
-    a_vec = np.array(emb.embed_query(answer))
-
-    q_n = q_vec / (np.linalg.norm(q_vec) + 1e-8)
-    a_n = a_vec / (np.linalg.norm(a_vec) + 1e-8)
-    sim = float(np.dot(q_n, a_n))
-
-    # If answer is semantically far from question → it's off-topic
-    if sim < 0.3:
-        return 0.15
-    elif sim < 0.5:
-        return 0.4
-    elif sim < 0.65:
-        return 0.7
-    return 1.0
-
-
-def check_faithfulness(context, answer, question=""):
-    """
-    Smooth hybrid scoring with entity-aware guards:
-    1. NLI entailment (continuous) against overlapping context windows
-    2. Semantic similarity between each claim and best context window
-    3. Entity overlap penalty (question terms vs context)
-    4. Answer-Question coherence penalty
-    → Final smooth score from 0.0 to 1.0
-    """
-    nli_tokenizer, nli_model = load_nli()
-    emb = load_embeddings()
-
-    valid_sentences = [s for s in split_sentences(answer) if len(s.strip()) >= 10]
-    if not valid_sentences:
-        return 0.5
-
-    # Overlapping context windows (400 chars, step 300)
-    ctx_windows = []
-    for i in range(0, len(context), 300):
-        w = context[i:i + 400]
-        if len(w.strip()) > 20:
-            ctx_windows.append(w)
-    ctx_windows = (ctx_windows or [context[:512]])[:6]
-
-    # --- Part A: Semantic similarity (batch) ---
-    sent_vecs = np.array(emb.embed_documents(valid_sentences))
-    ctx_vecs = np.array(emb.embed_documents(ctx_windows))
-
-    sent_norms = sent_vecs / (np.linalg.norm(sent_vecs, axis=1, keepdims=True) + 1e-8)
-    ctx_norms = ctx_vecs / (np.linalg.norm(ctx_vecs, axis=1, keepdims=True) + 1e-8)
-    sim_matrix = sent_norms @ ctx_norms.T
-    best_sims = np.clip(sim_matrix.max(axis=1), 0.0, 1.0)
-
-    # --- Part B: NLI entailment (batch) ---
-    premises = []
-    hypotheses = []
-    pair_sent_idx = []
-    for i, sent in enumerate(valid_sentences):
-        for window in ctx_windows:
-            premises.append(window)
-            hypotheses.append(sent[:256])
-            pair_sent_idx.append(i)
-
-    batch_inputs = nli_tokenizer(
-        premises, hypotheses,
-        return_tensors="pt", truncation=True, padding=True, max_length=512
-    )
-    with torch.no_grad():
-        batch_logits = nli_model(**batch_inputs).logits
-    batch_probs = torch.softmax(batch_logits, dim=1)
-
-    best_ent = [0.0] * len(valid_sentences)
-    for k, si in enumerate(pair_sent_idx):
-        ent = batch_probs[k][1].item()
-        if ent > best_ent[si]:
-            best_ent[si] = ent
-
-    # --- Part C: Hybrid per-sentence score ---
-    scores = []
-    for i in range(len(valid_sentences)):
-        hybrid = 0.55 * best_ent[i] + 0.45 * float(best_sims[i])
-        scores.append(hybrid)
-
-    raw_score = float(np.mean(scores))
-
-    # --- Part D: Entity-aware penalties ---
-    if question:
-        entity_penalty = _question_context_relevance(question, context)
-        coherence_penalty = _answer_question_coherence(question, answer)
-        raw_score *= min(entity_penalty, coherence_penalty)
-
-    return max(0.0, min(1.0, raw_score))
-
-
-# ============================================================
-#  Answer Generation (Free - without context)
-# ============================================================
-def generate_free_answer(question):
-    """Generate answer using FLAN-T5 from its own knowledge (NO context)"""
-    gen_tokenizer, gen_model = load_generator()
-    prompt = FREE_GENERATION_PROMPT.format(question=question)
-    inputs = gen_tokenizer(prompt, return_tensors="pt", max_length=512, truncation=True)
-    with torch.no_grad():
-        outputs = gen_model.generate(
-            **inputs,
-            max_length=512,
-            min_length=50,
-            num_beams=4,
-            early_stopping=True,
-            no_repeat_ngram_size=3,
-            length_penalty=1.5
-        )
-    return gen_tokenizer.decode(outputs[0], skip_special_tokens=True).strip()
-
-
-# --- Sidebar ---
-with st.sidebar:
-    st.markdown("""
-    <div style="text-align:center; padding: 1rem 0 0.5rem;">
-        <div style="font-size: 2.5rem;">🏥</div>
-        <div style="font-size: 1.3rem; font-weight: 700; color: #1e293b; margin-top: 0.3rem;">BioRAG</div>
-        <div style="font-size: 0.8rem; color: #64748b;">Medical Hallucination Detector</div>
-    </div>
-    """, unsafe_allow_html=True)
-
-    st.markdown("---")
-
-    st.markdown("""
-    <div style="padding: 0.6rem 0;">
-        <div style="font-size: 0.75rem; color: #64748b; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 0.5rem;">Pipeline</div>
-        <div style="color: #334155; font-size: 0.85rem; line-height: 2;">
-            <span style="color: #2563eb;">①</span> Generate Freely<br>
-            <span style="color: #0d9488;">②</span> Retrieve Sources<br>
-            <span style="color: #d97706;">③</span> Verify & Score
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
-
-    st.markdown("---")
-
-    st.markdown("""
-    <div style="padding: 0.4rem 0;">
-        <div style="font-size: 0.75rem; color: #64748b; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 0.5rem;">Models</div>
-        <div style="color: #475569; font-size: 0.78rem; line-height: 1.9;">
-            🔬 <span style="color: #7c3aed;">""" + GENERATOR_MODEL_NAME + """</span><br>
-            🛡️ <span style="color: #059669;">""" + NLI_MODEL_NAME.split('/')[-1] + """</span><br>
-            🔢 <span style="color: #2563eb;">""" + EMBEDDING_MODEL_NAME.split('/')[-1] + """</span>
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
-
-    st.markdown("---")
-    if st.button("🔄 Refresh Database"):
-        load_vector_db.clear()
-        st.rerun()
-
-    st.markdown("---")
-    st.markdown('<div style="text-align:center; color: #64748b; font-size: 0.75rem;">🔒 Fully local · No API keys</div>', unsafe_allow_html=True)
-
-# --- Chat UI ---
-st.markdown("""
-<div style="padding: 0.5rem 0 0.3rem;">
-    <h1 style="color: #1e293b; font-size: 1.6rem; margin-bottom: 0.2rem;">🏥 BioRAG Medical Assistant</h1>
-    <p style="color: #64748b; font-size: 0.88rem; margin: 0;">AI generates answers freely, then verifies against PubMed sources</p>
-</div>
-""", unsafe_allow_html=True)
-st.markdown("---")
-
-if "messages" not in st.session_state:
-    st.session_state.messages = []
-
-for msg in st.session_state.messages:
-    with st.chat_message(msg["role"]):
-        st.markdown(msg["content"])
-        if "score" in msg and msg["score"] is not None:
-            pct = msg["score"]
-            if pct >= FAITHFULNESS_THRESHOLD:
-                icon, label, color = "✅", "Verified", "#059669"
-            elif pct >= 0.4:
-                icon, label, color = "ℹ️", "Partial", "#2563eb"
-            else:
-                icon, label, color = "⚠️", "Low Match", "#dc2626"
-            st.markdown(f'<div style="color: {color}; font-size: 0.82rem; margin-top: 0.3rem;">{icon} Faithfulness: {pct:.0%} — {label}</div>', unsafe_allow_html=True)
-
-if prompt := st.chat_input("Ask a medical question about diabetes..."):
-    st.session_state.messages.append({"role": "user", "content": prompt})
-    with st.chat_message("user"):
-        st.markdown(prompt)
-
-    with st.chat_message("assistant"):
-        score = None
-        context_text = ""
-        retrieved_docs = []
-
-        # ===== Step 1: Generate answer FREELY (no context) =====
-        with st.spinner("🤖 AI is generating answer from its own knowledge..."):
-            reply = generate_free_answer(prompt)
-
-        st.markdown(reply)
-
-        # ===== Step 2: Retrieve sources AFTER generation =====
-        with st.spinner("🔍 Searching medical literature to verify..."):
-            retrieved_docs, relevance_score = retrieve_relevant_docs(prompt)
-            context_text = "\n\n".join([doc.page_content for doc in retrieved_docs])
-
-        sources_relevant = bool(context_text.strip()) and relevance_score >= MIN_RELEVANCE_THRESHOLD
-
-        # ===== Step 3: Compare AI answer vs sources =====
-        if sources_relevant:
-            with st.spinner("🛡️ Comparing AI answer against medical sources..."):
-                score = check_faithfulness(context_text, reply, question=prompt)
-
-            # Determine result based on score
-            if score >= FAITHFULNESS_THRESHOLD:
-                score_icon = "✅"
-                score_label = "Verified"
-                score_desc = "Answer is supported by medical literature"
-            elif score >= 0.4:
-                score_icon = "ℹ️"
-                score_label = "Partial Match"
-                score_desc = "Answer is partially supported by sources"
-            else:
-                score_icon = "⚠️"
-                score_label = "Low Match"
-                score_desc = "Answer has low match with medical sources"
-
-            if score >= FAITHFULNESS_THRESHOLD:
-                color, bg = "#059669", "#f0fdf4"
-            elif score >= 0.4:
-                color, bg = "#2563eb", "#eff6ff"
-            else:
-                color, bg = "#dc2626", "#fef2f2"
-
-            st.markdown(f"""
-            <div style="margin-top: 1rem; padding: 1rem 1.2rem; background: {bg}; border: 1px solid {color}22; border-left: 3px solid {color}; border-radius: 10px;">
-                <div style="display: flex; align-items: center; gap: 0.8rem;">
-                    <span style="font-size: 1.8rem; font-weight: 700; color: {color};">{score:.0%}</span>
-                    <div>
-                        <div style="color: #1e293b; font-weight: 600; font-size: 0.9rem;">{score_icon} {score_label}</div>
-                        <div style="color: #64748b; font-size: 0.78rem;">{score_desc} · {len(retrieved_docs)} sources checked</div>
-                    </div>
-                </div>
-            </div>
-            """, unsafe_allow_html=True)
-
-            with st.expander("📖 View Source Documents"):
-                for i, doc in enumerate(retrieved_docs, 1):
-                    meta = doc.metadata or {}
-                    source_name = meta.get('source', 'N/A')
-                    st.markdown(f'<div style="color: #2563eb; font-size: 0.82rem; font-weight: 600;">Source {i} <span style="color: #64748b; font-weight: 400;">— {source_name}</span></div>', unsafe_allow_html=True)
-                    if meta.get('question'):
-                        st.caption(f"Original Q: {meta['question'][:200]}")
-                    st.text_area(
-                        label=f"source_{i}",
-                        value=doc.page_content[:500],
-                        height=90,
-                        key=f"src_{i}_{len(st.session_state.messages)}",
-                        label_visibility="collapsed"
-                    )
-        else:
-            st.warning("🚫 No relevant sources found — cannot verify this answer against PubMedQA database.")
-
-    st.session_state.messages.append({
-        "role": "assistant",
-        "content": reply,
-        "score": score
+    sentences = [s for s in sentences if s.strip()]
+
+    if not sentences:
+        return text
+
+    translated_parts = []
+    # Translate in small batches
+    batch_size = 8
+    for i in range(0, len(sentences), batch_size):
+        batch = sentences[i:i + batch_size]
+        inputs = _translator_tokenizer(batch, return_tensors="pt",
+                                        padding=True, truncation=True,
+                                        max_length=512)
+        output_ids = _translator_model.generate(**inputs, max_new_tokens=512)
+        for out in output_ids:
+            decoded = _translator_tokenizer.decode(out, skip_special_tokens=True)
+            translated_parts.append(decoded)
+
+    result = " ".join(translated_parts)
+    # Preserve bullet formatting
+    result = result.replace("• ", "\n• ").strip()
+    result = result.replace("\n\n• ", "\n• ")
+    return result
+
+
+def _is_indonesian(text: str) -> bool:
+    """Heuristic: check if text contains common Indonesian words."""
+    id_markers = {"apakah", "bagaimana", "mengapa", "bisakah", "dapatkah",
+                  "adakah", "dengan", "pada", "untuk", "terhadap", "dari",
+                  "gula darah", "kadar gula", "penderita", "penyakit",
+                  "dan", "atau", "yang", "ini", "itu", "bisa", "dapat",
+                  "obat", "menyebabkan", "berpengaruh", "membantu"}
+    words = text.lower().split()
+    matches = sum(1 for w in words if w in id_markers)
+    return matches >= 2 or any(phrase in text.lower() for phrase in
+                               ["gula darah", "kadar gula", "apakah", "bagaimana",
+                                "bisakah", "dapatkah", "resistensi insulin",
+                                "pola makan", "faktor risiko"])
+
+def _translate_id_to_en(text: str) -> str:
+    """Simple keyword-based Indonesian to English translation for medical queries."""
+    result = text.lower()
+    # Sort by length descending so longer phrases match first
+    for id_term, en_term in sorted(_ID_EN_MAP.items(), key=lambda x: -len(x[0])):
+        result = result.replace(id_term, en_term)
+    # Clean up
+    result = re.sub(r'\s+', ' ', result).strip()
+    # Capitalize first letter
+    if result:
+        result = result[0].upper() + result[1:]
+    return result
+
+app = Flask(__name__, static_folder="static")
+
+# Global pipeline instance (loaded once on first request)
+_pipeline = None
+_pipeline_lock = threading.Lock()
+_pipeline_loading = False
+_pipeline_error = None
+
+
+def get_pipeline():
+    global _pipeline, _pipeline_loading, _pipeline_error
+    if _pipeline is not None:
+        return _pipeline
+
+    with _pipeline_lock:
+        if _pipeline is not None:
+            return _pipeline
+
+        _pipeline_loading = True
+        try:
+            logger.info("Loading Bio-RAG pipeline (first request)...")
+            from src.bio_rag.pipeline import BioRAGPipeline
+            _pipeline = BioRAGPipeline()
+            _pipeline_loading = False
+            logger.info("Pipeline ready!")
+            return _pipeline
+        except Exception as e:
+            _pipeline_loading = False
+            _pipeline_error = str(e)
+            logger.error("Pipeline load failed: %s", e)
+            raise
+
+
+@app.route("/")
+def index():
+    return send_from_directory("static", "index.html")
+
+
+@app.route("/api/status")
+def status():
+    return jsonify({
+        "ready": _pipeline is not None,
+        "loading": _pipeline_loading,
+        "error": _pipeline_error,
     })
 
-# Footer
-st.markdown('<div style="text-align:center; padding: 1.5rem 0 0.5rem; border-top: 1px solid #e2e8f0; margin-top: 1rem;"><span style="color: #94a3b8; font-size: 0.75rem;">⚠️ For research and educational purposes only. Consult a qualified healthcare professional.</span></div>', unsafe_allow_html=True)
+
+@app.route("/api/ask", methods=["POST"])
+def ask():
+    data = request.get_json(force=True)
+    question = data.get("question", "").strip()
+
+    if not question:
+        return jsonify({"error": "Question is required"}), 400
+
+    if len(question) > 500:
+        return jsonify({"error": "Question too long (max 500 chars)"}), 400
+
+    try:
+        t0 = time.time()
+        pipe = get_pipeline()
+
+        # Detect Indonesian and translate for retrieval
+        original_question = question
+        is_id = _is_indonesian(question)
+        if is_id:
+            question_en = _translate_id_to_en(question)
+            logger.info("ID→EN: '%s' → '%s'", question, question_en)
+        else:
+            question_en = question
+
+        result = pipe.ask(question_en)
+        duration = time.time() - t0
+
+        # Translate answer back to Indonesian if question was in Indonesian
+        answer_text = result.answer
+        if is_id:
+            answer_text = _translate_en_to_id(answer_text)
+
+        evidence_list = []
+        for p in result.evidence:
+            evidence_list.append({
+                "rank": p.rank,
+                "score": round(p.score, 4),
+                "qid": p.qid,
+                "text": p.text[:300],
+                "authors": p.authors,
+                "year": p.year,
+                "journal": p.journal,
+                "title": p.title,
+                "pubmed_url": f"https://pubmed.ncbi.nlm.nih.gov/{p.qid}/" if p.qid.isdigit() else "",
+            })
+
+        return jsonify({
+            "question": original_question,
+            "question_en": question_en if is_id else None,
+            "language": "id" if is_id else "en",
+            "answer": answer_text,
+            "evidence": evidence_list,
+            "claims": result.claims,
+            "claim_checks": result.claim_checks,
+            "trust_score": round(result.trust_score, 4),
+            "ragas": {
+                k: round(v, 4) if isinstance(v, float) else v
+                for k, v in result.ragas.items()
+            },
+            "duration": round(duration, 2),
+        })
+
+    except Exception as e:
+        logger.exception("Error processing question")
+        return jsonify({"error": str(e)}), 500
+
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=5000, debug=False)
