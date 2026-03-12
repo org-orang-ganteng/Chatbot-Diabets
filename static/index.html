@@ -1,0 +1,365 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Bio-RAG Diabetes Chatbot</title>
+<style>
+/* ── Reset & Base ─────────────────────────────────────────────── */
+*{margin:0;padding:0;box-sizing:border-box}
+html,body{height:100%;font-family:'Segoe UI',system-ui,-apple-system,sans-serif;background:#0f172a;color:#e2e8f0;overflow:hidden}
+
+/* ── Layout ───────────────────────────────────────────────────── */
+.app{display:flex;height:100vh}
+
+/* ── Sidebar ──────────────────────────────────────────────────── */
+.sidebar{width:220px;background:#1e293b;display:flex;flex-direction:column;border-right:1px solid #334155;flex-shrink:0}
+.sidebar .logo{padding:16px;font-size:1.1rem;font-weight:700;color:#38bdf8;border-bottom:1px solid #334155;display:flex;align-items:center;gap:8px}
+.sidebar .logo span{font-size:1.4rem}
+.sidebar .new-chat{margin:12px;padding:10px;border-radius:8px;border:1px dashed #475569;text-align:center;cursor:pointer;color:#94a3b8;font-size:.85rem;transition:all .2s}
+.sidebar .new-chat:hover{border-color:#38bdf8;color:#38bdf8}
+.sidebar .history{flex:1;overflow-y:auto;padding:8px 12px}
+.sidebar .history .item{padding:8px 10px;border-radius:6px;font-size:.8rem;color:#94a3b8;cursor:pointer;margin-bottom:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;transition:background .15s}
+.sidebar .history .item:hover{background:#334155;color:#e2e8f0}
+.sidebar .status-bar{padding:12px;border-top:1px solid #334155;font-size:.75rem;color:#64748b}
+.sidebar .status-bar .dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px}
+.sidebar .status-bar .dot.green{background:#22c55e}
+.sidebar .status-bar .dot.yellow{background:#eab308;animation:pulse 1s infinite}
+.sidebar .status-bar .dot.red{background:#ef4444}
+.sidebar .stack-tags{padding:8px 12px 14px;display:flex;flex-wrap:wrap;gap:4px}
+.sidebar .stack-tags span{font-size:.65rem;background:#334155;color:#94a3b8;padding:2px 7px;border-radius:4px}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
+
+/* ── Main Chat ────────────────────────────────────────────────── */
+.main{flex:1;display:flex;flex-direction:column;min-width:0}
+.header{padding:14px 24px;border-bottom:1px solid #1e293b;background:#0f172a;display:flex;align-items:center;justify-content:space-between;flex-shrink:0}
+.header h2{font-size:1rem;font-weight:600;color:#e2e8f0}
+.header .badge{font-size:.7rem;background:#1e3a5f;color:#38bdf8;padding:3px 10px;border-radius:20px}
+
+/* ── Messages Area (BIGGER) ──────────────────────────────────── */
+.messages{flex:1;overflow-y:auto;padding:24px 32px;display:flex;flex-direction:column;gap:20px}
+
+/* ── Empty State ──────────────────────────────────────────────── */
+.empty-state{display:flex;flex-direction:column;align-items:center;justify-content:center;flex:1;gap:16px;color:#64748b;text-align:center}
+.empty-state .icon{font-size:3rem}
+.empty-state h3{font-size:1.3rem;color:#94a3b8}
+.empty-state p{font-size:.85rem;max-width:400px;line-height:1.5}
+.chips{display:flex;flex-wrap:wrap;gap:8px;justify-content:center;margin-top:8px}
+.chip{background:#1e293b;border:1px solid #334155;color:#94a3b8;padding:8px 14px;border-radius:20px;font-size:.8rem;cursor:pointer;transition:all .2s;max-width:280px;text-align:left}
+.chip:hover{border-color:#38bdf8;color:#38bdf8;background:#1e3a5f}
+
+/* ── Message Bubbles (BIGGER text) ────────────────────────────── */
+.msg{display:flex;gap:12px;max-width:85%;animation:fadeIn .3s}
+.msg.user{align-self:flex-end;flex-direction:row-reverse}
+.msg.bot{align-self:flex-start}
+.msg .avatar{width:36px;height:36px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:1rem;flex-shrink:0}
+.msg.user .avatar{background:#3b82f6}
+.msg.bot .avatar{background:#0f766e}
+.msg-bubble{padding:14px 18px;border-radius:16px;font-size:.95rem;line-height:1.7;max-width:100%;word-wrap:break-word}
+.msg.user .msg-bubble{background:#1e3a5f;border-bottom-right-radius:4px;color:#e2e8f0}
+.msg.bot .msg-bubble{background:#1e293b;border-bottom-left-radius:4px;color:#cbd5e1}
+@keyframes fadeIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
+
+/* ── Translation Notice ───────────────────────────────────────── */
+.translation-notice{font-size:.75rem;color:#94a3b8;background:#1e293b;border:1px solid #334155;padding:6px 12px;border-radius:8px;margin-bottom:4px;display:flex;align-items:center;gap:6px}
+.translation-notice .flag{font-size:1rem}
+
+/* ── Metrics Row ──────────────────────────────────────────────── */
+.metrics{display:flex;flex-wrap:wrap;gap:6px;margin-top:10px}
+.metric-badge{display:flex;align-items:center;gap:4px;background:#0f172a;border:1px solid #334155;padding:4px 10px;border-radius:14px;font-size:.7rem;color:#94a3b8}
+.metric-badge .val{color:#38bdf8;font-weight:600}
+.metric-badge .label{color:#64748b}
+
+/* ── Evidence Section ─────────────────────────────────────────── */
+.evidence-section{margin-top:12px}
+.ev-toggle{background:none;border:1px solid #334155;color:#94a3b8;padding:6px 14px;border-radius:8px;cursor:pointer;font-size:.78rem;transition:all .15s;display:flex;align-items:center;gap:6px}
+.ev-toggle:hover{border-color:#38bdf8;color:#38bdf8}
+.ev-list{margin-top:8px;display:none;flex-direction:column;gap:8px}
+.ev-list.open{display:flex}
+.ev-item{background:#0f172a;border:1px solid #334155;border-radius:10px;padding:12px 14px;font-size:.82rem;color:#94a3b8;line-height:1.5;transition:border-color .2s}
+.ev-item:hover{border-color:#475569}
+.ev-item .ev-header{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:6px;gap:8px}
+.ev-item .ev-rank{background:#1e3a5f;color:#38bdf8;padding:2px 8px;border-radius:10px;font-size:.7rem;font-weight:600;flex-shrink:0}
+.ev-item .ev-score{color:#64748b;font-size:.7rem;flex-shrink:0}
+.ev-item .ev-title{font-weight:600;color:#e2e8f0;font-size:.82rem;margin-bottom:4px}
+.ev-item .ev-meta{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:6px;font-size:.72rem;color:#64748b}
+.ev-item .ev-meta span{display:flex;align-items:center;gap:3px}
+.ev-item .ev-meta .author-icon::before{content:"👤"}
+.ev-item .ev-meta .year-icon::before{content:"📅"}
+.ev-item .ev-meta .journal-icon::before{content:"📖"}
+.ev-item .ev-text{color:#94a3b8;font-size:.78rem;line-height:1.5}
+.ev-item .ev-link{display:inline-block;margin-top:6px;color:#38bdf8;font-size:.72rem;text-decoration:none;transition:color .15s}
+.ev-item .ev-link:hover{color:#7dd3fc;text-decoration:underline}
+
+/* ── Claims ───────────────────────────────────────────────────── */
+.claims{margin-top:10px}
+.claim{display:flex;align-items:flex-start;gap:8px;padding:6px 0;font-size:.8rem;color:#94a3b8}
+.claim .status{font-size:1rem;flex-shrink:0}
+
+/* ── Thinking Indicator ───────────────────────────────────────── */
+.thinking{display:flex;align-items:center;gap:8px;padding:14px 18px;color:#64748b;font-size:.85rem}
+.thinking .dots span{animation:blink 1.4s infinite;font-size:1.2rem}
+.thinking .dots span:nth-child(2){animation-delay:.2s}
+.thinking .dots span:nth-child(3){animation-delay:.4s}
+@keyframes blink{0%,80%,100%{opacity:.2}40%{opacity:1}}
+
+/* ── Input Bar ────────────────────────────────────────────────── */
+.input-bar{padding:16px 32px 20px;border-top:1px solid #1e293b;background:#0f172a;flex-shrink:0}
+.input-wrap{display:flex;gap:10px;max-width:900px;margin:0 auto}
+.input-wrap textarea{flex:1;background:#1e293b;border:1px solid #334155;color:#e2e8f0;padding:12px 16px;border-radius:12px;font-size:.95rem;resize:none;outline:none;font-family:inherit;line-height:1.5;min-height:48px;max-height:120px;transition:border-color .2s}
+.input-wrap textarea:focus{border-color:#38bdf8}
+.input-wrap textarea::placeholder{color:#475569}
+.input-wrap button{background:#3b82f6;border:none;color:#fff;width:48px;height:48px;border-radius:12px;cursor:pointer;font-size:1.2rem;transition:background .2s;flex-shrink:0;align-self:flex-end}
+.input-wrap button:hover{background:#2563eb}
+.input-wrap button:disabled{background:#334155;cursor:not-allowed}
+
+/* ── Scrollbar ────────────────────────────────────────────────── */
+::-webkit-scrollbar{width:6px}
+::-webkit-scrollbar-track{background:transparent}
+::-webkit-scrollbar-thumb{background:#334155;border-radius:3px}
+::-webkit-scrollbar-thumb:hover{background:#475569}
+
+/* ── Responsive ───────────────────────────────────────────────── */
+@media(max-width:768px){
+  .sidebar{display:none}
+  .messages{padding:16px}
+  .input-bar{padding:12px 16px 16px}
+  .msg{max-width:95%}
+}
+</style>
+</head>
+<body>
+<div class="app">
+
+<!-- Sidebar -->
+<aside class="sidebar">
+  <div class="logo"><span>🧬</span> Bio-RAG</div>
+  <div class="new-chat" onclick="newChat()">+ New Chat</div>
+  <div class="history" id="history"></div>
+  <div class="stack-tags">
+    <span>BioBERT</span><span>FAISS</span><span>flan-t5</span><span>PubMedQA</span>
+  </div>
+  <div class="status-bar" id="statusBar"><span class="dot yellow"></span>Checking…</div>
+</aside>
+
+<!-- Main -->
+<div class="main">
+  <div class="header">
+    <h2>Diabetes Evidence-Based QA</h2>
+    <span class="badge">Bio-RAG v1.0</span>
+  </div>
+
+  <div class="messages" id="messages">
+    <div class="empty-state" id="emptyState">
+      <div class="icon">🔬</div>
+      <h3>Ask anything about diabetes</h3>
+      <p>Evidence-based answers from PubMed literature with author attribution, hallucination scoring, and claim verification.</p>
+      <div class="chips">
+        <div class="chip" onclick="useChip(this)">Does metformin reduce cardiovascular risk in type 2 diabetes?</div>
+        <div class="chip" onclick="useChip(this)">What is the relationship between obesity and insulin resistance?</div>
+        <div class="chip" onclick="useChip(this)">Apakah insulin mempengaruhi kadar gula darah?</div>
+        <div class="chip" onclick="useChip(this)">Bagaimana diabetes tipe 2 didiagnosis?</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="input-bar">
+    <div class="input-wrap">
+      <textarea id="questionInput" placeholder="Ask a diabetes question (English or Bahasa Indonesia)…" rows="1" onkeydown="handleKey(event)" oninput="autoResize(this)"></textarea>
+      <button id="sendBtn" onclick="sendQuestion()">➤</button>
+    </div>
+  </div>
+</div>
+</div>
+
+<script>
+const messagesEl = document.getElementById('messages');
+const emptyState = document.getElementById('emptyState');
+const input = document.getElementById('questionInput');
+const sendBtn = document.getElementById('sendBtn');
+const statusBar = document.getElementById('statusBar');
+const historyEl = document.getElementById('history');
+
+let chatHistory = [];
+let busy = false;
+
+/* ── Status polling ────────────────────────────────────────── */
+async function checkStatus(){
+  try{
+    const r=await fetch('/api/status');
+    const d=await r.json();
+    if(d.ready){statusBar.innerHTML='<span class="dot green"></span>Pipeline ready';}
+    else if(d.loading){statusBar.innerHTML='<span class="dot yellow"></span>Loading model…';setTimeout(checkStatus,3000);}
+    else if(d.error){statusBar.innerHTML='<span class="dot red"></span>Error';}
+    else{setTimeout(checkStatus,3000);}
+  }catch(e){statusBar.innerHTML='<span class="dot red"></span>Offline';setTimeout(checkStatus,5000);}
+}
+checkStatus();
+
+/* ── Input helpers ─────────────────────────────────────────── */
+function autoResize(el){el.style.height='auto';el.style.height=Math.min(el.scrollHeight,120)+'px';}
+function handleKey(e){if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();sendQuestion();}}
+function useChip(el){input.value=el.textContent;autoResize(input);sendQuestion();}
+
+/* ── New Chat ──────────────────────────────────────────────── */
+function newChat(){
+  messagesEl.innerHTML='';
+  emptyState.style.display='';
+  messagesEl.appendChild(emptyState);
+  chatHistory=[];
+}
+
+/* ── Send question ─────────────────────────────────────────── */
+async function sendQuestion(){
+  const q=input.value.trim();
+  if(!q||busy)return;
+  busy=true;
+  sendBtn.disabled=true;
+  input.value='';
+  autoResize(input);
+
+  // Hide empty state
+  if(emptyState.parentNode)emptyState.remove();
+
+  // User bubble
+  appendMsg('user',escHtml(q));
+
+  // Add to sidebar history
+  addHistoryItem(q);
+
+  // Thinking indicator
+  const thinkEl=document.createElement('div');
+  thinkEl.className='msg bot';
+  thinkEl.innerHTML='<div class="avatar">🧬</div><div class="thinking"><div class="dots"><span>●</span><span>●</span><span>●</span></div>&nbsp;Analyzing evidence…</div>';
+  messagesEl.appendChild(thinkEl);
+  scrollDown();
+
+  try{
+    const r=await fetch('/api/ask',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({question:q})});
+    const d=await r.json();
+    thinkEl.remove();
+    if(d.error){appendMsg('bot','⚠️ '+escHtml(d.error));return;}
+    buildBotBubble(d);
+  }catch(e){
+    thinkEl.remove();
+    appendMsg('bot','⚠️ Network error — is the server running?');
+  }finally{
+    busy=false;
+    sendBtn.disabled=false;
+    input.focus();
+  }
+}
+
+/* ── Build bot response ────────────────────────────────────── */
+function buildBotBubble(d){
+  const wrapper=document.createElement('div');
+  wrapper.className='msg bot';
+
+  let html='<div class="avatar">🧬</div><div class="msg-bubble">';
+
+  // Translation notice
+  if(d.language==='id' && d.question_en){
+    html+=`<div class="translation-notice"><span class="flag">🇮🇩</span> Diterjemahkan: <em>${escHtml(d.question_en)}</em></div>`;
+  }
+
+  // Answer with streaming effect class
+  html+=`<div class="answer-text">${escHtml(d.answer)}</div>`;
+
+  // Metrics
+  html+='<div class="metrics">';
+  html+=metricBadge('Trust',d.trust_score);
+  if(d.ragas){
+    if(d.ragas.faithfulness!=null) html+=metricBadge('Faithfulness',d.ragas.faithfulness);
+    if(d.ragas.answer_relevance!=null) html+=metricBadge('Relevance',d.ragas.answer_relevance);
+    if(d.ragas.context_precision!=null) html+=metricBadge('Precision',d.ragas.context_precision);
+  }
+  html+=metricBadge('Time',d.duration+'s');
+  html+='</div>';
+
+  // Claims
+  if(d.claims && d.claims.length){
+    html+='<div class="claims">';
+    d.claim_checks=d.claim_checks||[];
+    d.claims.forEach((c,i)=>{
+      const chk=d.claim_checks[i];
+      const icon=chk&&chk.supported?'✅':'⚠️';
+      html+=`<div class="claim"><span class="status">${icon}</span><span>${escHtml(c)}</span></div>`;
+    });
+    html+='</div>';
+  }
+
+  // Evidence
+  if(d.evidence && d.evidence.length){
+    const eid='ev_'+Date.now();
+    html+=`<div class="evidence-section">
+      <button class="ev-toggle" onclick="document.getElementById('${eid}').classList.toggle('open')">📚 Evidence (${d.evidence.length} sources) ▾</button>
+      <div class="ev-list" id="${eid}">`;
+    d.evidence.forEach(ev=>{
+      html+=`<div class="ev-item">
+        <div class="ev-header">
+          <span class="ev-rank">#${ev.rank}</span>
+          <span class="ev-score">Score: ${ev.score}</span>
+        </div>`;
+      // Title
+      if(ev.title){
+        html+=`<div class="ev-title">${escHtml(ev.title)}</div>`;
+      }
+      // Author / Year / Journal metadata
+      const hasMeta = ev.authors || ev.year || ev.journal;
+      if(hasMeta){
+        html+='<div class="ev-meta">';
+        if(ev.authors) html+=`<span><span class="author-icon"></span> ${escHtml(ev.authors)}</span>`;
+        if(ev.year)    html+=`<span><span class="year-icon"></span> ${escHtml(ev.year)}</span>`;
+        if(ev.journal) html+=`<span><span class="journal-icon"></span> ${escHtml(ev.journal)}</span>`;
+        html+='</div>';
+      }
+      html+=`<div class="ev-text">${escHtml(ev.text)}</div>`;
+      if(ev.pubmed_url){
+        html+=`<a class="ev-link" href="${escHtml(ev.pubmed_url)}" target="_blank" rel="noopener noreferrer">View on PubMed →</a>`;
+      }
+      html+=`</div>`;
+    });
+    html+='</div></div>';
+  }
+
+  html+='</div>';
+  wrapper.innerHTML=html;
+  messagesEl.appendChild(wrapper);
+  scrollDown();
+}
+
+/* ── Helpers ───────────────────────────────────────────────── */
+function appendMsg(role,content){
+  const el=document.createElement('div');
+  el.className='msg '+role;
+  const icon=role==='user'?'👤':'🧬';
+  el.innerHTML=`<div class="avatar">${icon}</div><div class="msg-bubble">${content}</div>`;
+  messagesEl.appendChild(el);
+  scrollDown();
+}
+
+function metricBadge(label,val){
+  const display=typeof val==='number'?(val*100).toFixed(1)+'%':val;
+  return `<span class="metric-badge"><span class="val">${display}</span><span class="label">${label}</span></span>`;
+}
+
+function escHtml(s){
+  if(!s)return'';
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+function scrollDown(){
+  requestAnimationFrame(()=>messagesEl.scrollTop=messagesEl.scrollHeight);
+}
+
+function addHistoryItem(q){
+  const el=document.createElement('div');
+  el.className='item';
+  el.textContent=q;
+  el.title=q;
+  el.onclick=()=>{input.value=q;autoResize(input);};
+  historyEl.prepend(el);
+}
+</script>
+</body>
+</html>
