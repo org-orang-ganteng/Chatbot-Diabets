@@ -204,6 +204,14 @@ def ask():
         result = pipe.ask(question_en)
         duration = time.time() - t0
 
+        # Point 4: No medical data found
+        if result.no_evidence:
+            return jsonify({
+                "question": original_question,
+                "error": "No relevant medical data found for this question.",
+                "no_evidence": True,
+            }), 404
+
         # Translate answer back to Indonesian if question was in Indonesian
         answer_text = result.answer
         if is_id:
@@ -236,6 +244,8 @@ def ask():
                 k: round(v, 4) if isinstance(v, float) else v
                 for k, v in result.ragas.items()
             },
+            "verified": result.verified,
+            "hallucination_warning": result.hallucination_warning,
             "duration": round(duration, 2),
         })
 

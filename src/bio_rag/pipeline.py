@@ -21,6 +21,9 @@ class BioRAGResult:
     claim_checks: list[dict]
     trust_score: float
     ragas: dict
+    verified: bool = False
+    hallucination_warning: bool = False
+    no_evidence: bool = False
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -47,6 +50,21 @@ class BioRAGPipeline:
 
     def ask(self, question: str) -> BioRAGResult:
         passages = self.retriever.retrieve(question)
+
+        # Point 4: Check if documents are found
+        if not passages:
+            from .evaluator import RagasScores
+            return BioRAGResult(
+                question=question,
+                answer="",
+                evidence=[],
+                claims=[],
+                claim_checks=[],
+                trust_score=0.0,
+                ragas=asdict(RagasScores(0.0, 0.0, 0.0)),
+                no_evidence=True,
+            )
+
         answer = self.generator.generate(question, passages)
 
         claims = decompose_into_claims(answer)
@@ -59,6 +77,9 @@ class BioRAGPipeline:
             embedding_model=self.config.embedding_model,
         )
 
+        # Point 7: Check faithfulness threshold
+        is_verified = ragas_scores.faithfulness > 0.7
+
         return BioRAGResult(
             question=question,
             answer=answer,
@@ -67,6 +88,8 @@ class BioRAGPipeline:
             claim_checks=[asdict(c) for c in checks],
             trust_score=trust,
             ragas=asdict(ragas_scores),
+            verified=is_verified,
+            hallucination_warning=not is_verified,
         )
 
     def _best_reference_answer(self, passages: list[RetrievedPassage]) -> str | None:

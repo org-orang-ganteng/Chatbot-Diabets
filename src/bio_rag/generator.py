@@ -86,11 +86,17 @@ class BiomedicalAnswerGenerator:
     def generate(self, question: str, passages: Iterable[RetrievedPassage]) -> str:
         passage_list = list(passages)
 
+        # Filter out passages with weak relevance (high L2 distance)
+        relevant_passages = _filter_relevant_passages(question, passage_list)
+
+        if not relevant_passages:
+            return "No sufficiently relevant evidence found for this question."
+
         # Strategy 1: Try model generation
-        model_answer = self._try_model_generation(question, passage_list)
+        model_answer = self._try_model_generation(question, relevant_passages)
 
         # Strategy 2: Build answer from source Q&A pairs in evidence
-        source_answer = _build_answer_from_sources(question, passage_list)
+        source_answer = _build_answer_from_sources(question, relevant_passages)
 
         # Combine: if model answer is good, use it as lead + enrich with sources
         if _is_good_answer(model_answer, question):
@@ -143,6 +149,32 @@ class BiomedicalAnswerGenerator:
         return decoded.strip()
 
 
+def _filter_relevant_passages(
+    question: str, passages: list[RetrievedPassage]
+) -> list[RetrievedPassage]:
+    """Keep only passages whose text has meaningful keyword overlap with the question."""
+    q_words = set(re.findall(r'\b[a-zA-Z]{4,}\b', question.lower()))
+    # Remove very common words
+    stopwords = {"does", "with", "that", "this", "from", "have", "been", "were",
+                 "what", "which", "their", "they", "than", "more", "about",
+                 "between", "associated", "patients", "study", "results"}
+    q_keywords = q_words - stopwords
+    if not q_keywords:
+        q_keywords = q_words
+
+    relevant = []
+    for p in passages:
+        p_text = (p.text + " " + p.title + " " + p.source_question).lower()
+        p_words = set(re.findall(r'\b[a-zA-Z]{4,}\b', p_text))
+        overlap = q_keywords & p_words
+        # At least 30% keyword overlap or 3+ overlapping keywords
+        ratio = len(overlap) / max(len(q_keywords), 1)
+        if ratio >= 0.3 or len(overlap) >= 3:
+            relevant.append(p)
+
+    return relevant if relevant else passages[:2]  # fallback: best 2 by distance
+
+
 def _is_good_answer(answer: str, question: str) -> bool:
     """Check if an answer is meaningful and relevant to the question."""
     if not answer or len(answer) < 30:
@@ -193,12 +225,18 @@ def _build_answer_from_sources(question: str, passages: list[RetrievedPassage]) 
         return "No relevant evidence found for this question."
 
     q_lower = question.lower()
+    q_words = set(re.findall(r'\b[a-zA-Z]{4,}\b', q_lower))
 
     # Collect relevant findings from source answers and context
     findings = []
     for p in passages[:5]:
         # Use the source answer (PubMedQA long_answer) if available and relevant
         if p.source_answer and len(p.source_answer) > 20:
+            # Check that the source answer is actually relevant to the question
+            sa_words = set(re.findall(r'\b[a-zA-Z]{4,}\b', p.source_answer.lower()))
+            overlap = q_words & sa_words
+            if len(overlap) < 2:
+                continue  # Skip irrelevant source answers
             findings.append({
                 "text": p.source_answer,
                 "title": p.title,

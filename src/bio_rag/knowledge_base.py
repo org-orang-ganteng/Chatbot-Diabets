@@ -18,7 +18,7 @@ class KnowledgeBaseBuilder:
     def build(self, samples: list[PubMedQASample]) -> FAISS:
         documents = [
             Document(
-                page_content=sample.context,
+                page_content=f"{sample.title}\n{sample.question}\n{sample.context}",
                 metadata={
                     "qid": sample.qid,
                     "question": sample.question,

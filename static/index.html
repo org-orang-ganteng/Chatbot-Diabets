@@ -120,6 +120,12 @@ html,body{height:100%;font-family:'Segoe UI',system-ui,-apple-system,sans-serif;
 .input-wrap button:hover{background:#2563eb}
 .input-wrap button:disabled{background:#334155;cursor:not-allowed}
 
+/* ── Verified / Warning Badges ─────────────────────────────── */
+.verified-badge{display:inline-flex;align-items:center;gap:6px;background:#064e3b;border:1px solid #10b981;color:#6ee7b7;padding:6px 14px;border-radius:8px;font-size:.8rem;font-weight:600;margin-bottom:10px}
+.warning-badge{display:inline-flex;align-items:center;gap:6px;background:#451a03;border:1px solid #f59e0b;color:#fcd34d;padding:6px 14px;border-radius:8px;font-size:.8rem;font-weight:600;margin-bottom:10px}
+.no-evidence-msg{display:flex;align-items:center;gap:10px;background:#1c1917;border:1px solid #dc2626;color:#fca5a5;padding:14px 18px;border-radius:12px;font-size:.9rem;line-height:1.5}
+.no-evidence-msg .icon{font-size:1.5rem;flex-shrink:0}
+
 /* ── Scrollbar ────────────────────────────────────────────────── */
 ::-webkit-scrollbar{width:6px}
 ::-webkit-scrollbar-track{background:transparent}
@@ -163,8 +169,10 @@ html,body{height:100%;font-family:'Segoe UI',system-ui,-apple-system,sans-serif;
       <p>Evidence-based answers from PubMed literature with author attribution, hallucination scoring, and claim verification.</p>
       <div class="chips">
         <div class="chip" onclick="useChip(this)">Does hypoglycaemia increase the risk of cardiovascular events?</div>
-        <div class="chip" onclick="useChip(this)">Does insulin resistance drive the association between hyperglycemia and cardiovascular risk?</div>
-        <div class="chip" onclick="useChip(this)">Is high cumulative insulin exposure a risk factor of atherosclerosis in type 1 diabetes?</div>
+        <div class="chip" onclick="useChip(this)">Starting insulin in type 2 diabetes: continue oral hypoglycemic agents?</div>
+        <div class="chip" onclick="useChip(this)">Can Roux-en-Y gastric bypass provide a lifelong solution for diabetes mellitus?</div>
+        <div class="chip" onclick="useChip(this)">Is diabetes associated with increased risk of venous thromboembolism?</div>
+        <div class="chip" onclick="useChip(this)">Does aerobic fitness influence microvascular function in healthy adults at risk of developing Type 2 diabetes?</div>
         <div class="chip" onclick="useChip(this)">Apakah hipoglikemia meningkatkan risiko penyakit kardiovaskular?</div>
       </div>
     </div>
@@ -242,14 +250,22 @@ async function sendQuestion(){
   scrollDown();
 
   try{
-    const r=await fetch('/api/ask',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({question:q})});
+    const controller=new AbortController();
+    const timeout=setTimeout(()=>controller.abort(),300000);
+    const r=await fetch('/api/ask',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({question:q}),signal:controller.signal});
+    clearTimeout(timeout);
     const d=await r.json();
     thinkEl.remove();
+    if(d.no_evidence){
+      appendMsg('bot','<div class="no-evidence-msg"><span class="icon">🚫</span><span>No relevant medical data found for this question. Please try a different question related to diabetes.</span></div>');
+      return;
+    }
     if(d.error){appendMsg('bot','⚠️ '+escHtml(d.error));return;}
     buildBotBubble(d);
   }catch(e){
     thinkEl.remove();
-    appendMsg('bot','⚠️ Network error — is the server running?');
+    if(e.name==='AbortError'){appendMsg('bot','⚠️ Request timed out. Please try again.');}
+    else{appendMsg('bot','⚠️ Network error — is the server running?');}
   }finally{
     busy=false;
     sendBtn.disabled=false;
@@ -279,6 +295,11 @@ function buildBotBubble(d){
   html+=`<div class="question-echo"><strong>${lblQuestion}:</strong> ${escHtml(d.question)}</div>`;
 
   // Answer section
+  if(d.verified){
+    html+=`<div class="verified-badge">✅ Verified Answer — Faithfulness score above threshold</div>`;
+  } else if(d.hallucination_warning){
+    html+=`<div class="warning-badge">⚠️ Hallucination Warning — Faithfulness score below 0.7, interpret with caution</div>`;
+  }
   html+=`<div class="answer-label">${lblAnswer}</div>`;
   html+=`<div class="answer-text">${escHtml(d.answer)}</div>`;
 
